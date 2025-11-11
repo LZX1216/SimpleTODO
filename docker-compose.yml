@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  # 1. FastAPI 后端服务
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: todo_backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: mysql+pymysql://user:password@db:3306/todo_db
+
+  # 2. MySQL 数据库服务
+  db:
+    image: mysql:8.0
+    container_name: todo_mysql
+    environment:
+      # 数据库初始化配置
+      MYSQL_ROOT_PASSWORD: root_password_secure
+      MYSQL_DATABASE: todo_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  mysql_data:
