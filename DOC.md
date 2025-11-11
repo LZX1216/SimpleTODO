@@ -20,12 +20,17 @@
     SimpleTODO/
     ├── backend/                   # Python FastAPI 后端服务
     │   ├── app/                   # 核心应用代码
-    │   │   ├── api/               # 路由和端点定义 (tasks.py)
+    │   │   ├── api/               # 路由和端点定义 (待实现)
     │   │   ├── core/              # 配置和数据库连接
-    │   │   └── models/            # Pydantic (数据校验) 和 SQLAlchemy (ORM) 模型
+    │   │   │   ├── config.py      # 应用配置
+    │   │   │   └── database.py    # 数据库连接
+    │   │   ├── models/            # SQLAlchemy ORM 模型
+    │   │   │   └── task.py        # 任务数据模型
+    │   │   └── main.py            # FastAPI 应用入口
     │   ├── venv/                  # Python 虚拟环境
+    │   ├── Dockerfile             # 后端 Docker 镜像配置
     │   └── requirements.txt       # Python 依赖
-    ├── frontend/                  # Vue 3 前端应用
+    ├── frontend/                  # Vue 3 前端应用 (待实现)
     │   ├── src/
     │   │   ├── components/        # UI 组件
     │   │   └── views/             # 页面视图
@@ -35,10 +40,13 @@
     └── README.md
   ```  
 - 模块职责说明。  
-  - **main/index.ts**: 初始化 Electron 窗口，设置 IPC 监听，处理应用生命周期。
-  - **main/database.ts**: 封装所有 SQLite 数据库的 CRUD 操作，确保数据操作在主进程中，保障安全性。
-  - **src/services/**: 定义前端调用后端服务的接口，通过 Electron 的 ipcRenderer 向主进程发送请求。
-  - **src/components/**: 负责 UI 渲染和用户交互逻辑。
+  - **backend/app/main.py**: FastAPI 应用入口，初始化应用、配置 CORS、注册路由。
+  - **backend/app/core/config.py**: 应用配置管理（数据库连接、CORS 设置等）。
+  - **backend/app/core/database.py**: 数据库连接和会话管理，使用 SQLAlchemy ORM。
+  - **backend/app/models/task.py**: SQLAlchemy 数据模型定义，对应数据库表结构。
+  - **backend/app/api/**: RESTful API 路由定义，处理 HTTP 请求和响应（待实现）。
+  - **frontend/src/components/**: Vue 3 组件，负责 UI 渲染和用户交互逻辑（待实现）。
+  - **frontend/src/services/**: 前端 API 服务封装，通过 HTTP 请求调用后端接口（待实现）。
 
 ## 3. 需求细节与决策
 - 描述是否必填？如何处理空输入？ 
@@ -53,7 +61,7 @@
 - 如果涉及扩展功能（例如同步/提醒），简述设计思路。  
 
 ## 4. AI 使用说明
-- 使用 AI 工具（ChatGPT + Copilot + Cursor）  
+- 使用 AI 工具（Gemini + Copilot + Cursor）  
 - 使用 AI 的环节：
   - 文档初稿编写
   - 代码片段生成
