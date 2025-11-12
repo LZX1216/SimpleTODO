@@ -9,7 +9,7 @@ const API_BASE_URL = 'http://localhost:8000';
 const tasks = ref([]);
 const newTaskTitle = ref('');
 const newTaskDescription = ref('');
-const newTaskCategory = ref('生活');
+const newTaskCategory = ref('');
 const newTaskPriority = ref(2);
 const newTaskDueDate = ref('');
 const selectedCategory = ref(null);
@@ -20,7 +20,15 @@ const visibleActiveCount = ref(10); // 懒加载：初始显示的待处理任�
 const visibleCompletedCount = ref(10); // 懒加载：初始显示的已完成任务数量
 
 // --- 分类选项 ---
-const categories = ['工作', '学习', '生活', '其他'];
+const defaultCategories = ['工作', '学习', '生活', '其他'];
+
+// 从任务中提取所有分类，合并默认分类
+const categories = computed(() => {
+  // 从现有任务中提取所有分类
+  const taskCategories = [...new Set(tasks.value.map(task => task.category).filter(Boolean))];
+  // 合并默认分类和任务分类，去重并排序
+  return [...new Set([...defaultCategories, ...taskCategories])].sort();
+});
 const priorityOptions = [
   { value: 1, label: '高', icon: '🔥', color: '#ff4757' },
   { value: 2, label: '中', icon: '⚡', color: '#ffa502' },
@@ -89,12 +97,31 @@ const fetchTasks = async () => {
 };
 
 const addTask = async () => {
-  if (!newTaskTitle.value.trim()) return;
+  // 字符长度限制和验证
+  const title = newTaskTitle.value.trim();
+  if (!title) return;
+  
+  if (title.length > 255) {
+    alert('任务标题不能超过255个字符！');
+    return;
+  }
+  
+  const description = newTaskDescription.value.trim() || null;
+  if (description && description.length > 1000) {
+    alert('任务描述不能超过1000个字符！');
+    return;
+  }
+  
+  const category = newTaskCategory.value.trim() || '其他';
+  if (category.length > 50) {
+    alert('分类名称不能超过50个字符！');
+    return;
+  }
 
   const taskData = {
-    title: newTaskTitle.value.trim(),
-    description: newTaskDescription.value.trim() || null,
-    category: newTaskCategory.value,
+    title: title,
+    description: description,
+    category: category,
     priority: newTaskPriority.value,
     due_date: newTaskDueDate.value || null
   };
@@ -104,10 +131,15 @@ const addTask = async () => {
     newTaskTitle.value = '';
     newTaskDescription.value = '';
     newTaskDueDate.value = '';
+    newTaskCategory.value = ''; // 重置为空
     await fetchTasks();
   } catch (error) {
     console.error("添加任务失败:", error);
-    alert('添加任务失败，请检查后端状态。');
+    if (error.response?.data?.detail) {
+      alert(`添加任务失败：${error.response.data.detail}`);
+    } else {
+      alert('添加任务失败，请检查后端状态。');
+    }
   }
 };
 
@@ -266,6 +298,7 @@ onMounted(async () => {
               @keyup.enter="addTask"
               placeholder="输入任务标题..." 
               class="task-input"
+              maxlength="255"
             />
             <button @click="addTask" class="add-btn">
               <span class="btn-icon">✨</span>
@@ -280,13 +313,23 @@ onMounted(async () => {
               placeholder="描述（可选）..." 
               class="task-textarea"
               rows="2"
+              maxlength="1000"
             ></textarea>
           </div>
           
           <div class="input-row">
-            <select v-model="newTaskCategory" class="form-select">
-              <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
-            </select>
+            <div class="category-input-wrapper">
+              <input 
+                v-model="newTaskCategory" 
+                list="category-list"
+                placeholder="选择或输入分类..." 
+                class="form-select category-input"
+                maxlength="50"
+              />
+              <datalist id="category-list">
+                <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
+              </datalist>
+            </div>
             <select v-model="newTaskPriority" class="form-select">
               <option v-for="opt in priorityOptions" :key="opt.value" :value="opt.value">
                 {{ opt.icon }} {{ opt.label }}
@@ -500,11 +543,27 @@ onMounted(async () => {
 .app-wrapper {
   min-height: 100vh;
   padding: 20px;
-  background: #f5f5f5;
+  position: relative;
+  overflow-x: hidden;
 }
 
 .background-animation {
-  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 25%, #f093fb 50%, #4facfe 75%, #00f2fe 100%);
+  background-size: 400% 400%;
+  animation: gradientShift 15s ease infinite;
+  z-index: -1;
+  opacity: 0.1;
+}
+
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 
 .container {
@@ -526,6 +585,18 @@ onMounted(async () => {
 
 .header {
   margin-bottom: 30px;
+  animation: fadeInDown 0.6s ease-out;
+}
+
+@keyframes fadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .header-content {
@@ -541,13 +612,22 @@ onMounted(async () => {
   align-items: center;
   gap: 12px;
   margin: 0;
-  font-size: 2rem;
-  font-weight: 700;
-  color: #333;
+  font-size: 2.5rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .title-icon {
-  font-size: 2rem;
+  font-size: 2.5rem;
+  animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
 }
 
 .stats {
@@ -560,15 +640,24 @@ onMounted(async () => {
   flex-direction: column;
   align-items: center;
   padding: 12px 20px;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(10px);
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  transition: transform 0.3s ease;
+}
+
+.stat-item:hover {
+  transform: translateY(-5px) scale(1.05);
 }
 
 .stat-number {
-  font-size: 1.5rem;
+  font-size: 1.8rem;
   font-weight: 700;
-  color: #667eea;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .stat-label {
@@ -580,11 +669,25 @@ onMounted(async () => {
 .task-form-card,
 .controls-card,
 .tasks-section {
-  background: white;
-  border-radius: 12px;
-  padding: 20px;
-  margin-bottom: 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(20px);
+  border-radius: 24px;
+  padding: 24px;
+  margin-bottom: 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  animation: fadeInUp 0.6s ease-out;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .form-header {
@@ -618,10 +721,12 @@ onMounted(async () => {
 .form-select {
   flex: 1;
   min-width: 200px;
-  padding: 12px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
+  padding: 14px 18px;
+  border: 2px solid #e0e0e0;
+  border-radius: 12px;
   font-size: 1rem;
+  transition: all 0.3s ease;
+  background: white;
 }
 
 .task-input:focus,
@@ -629,6 +734,8 @@ onMounted(async () => {
 .form-select:focus {
   outline: none;
   border-color: #667eea;
+  box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+  transform: translateY(-2px);
 }
 
 .task-textarea {
@@ -636,22 +743,40 @@ onMounted(async () => {
   min-height: 80px;
 }
 
+.category-input-wrapper {
+  flex: 1;
+  min-width: 200px;
+  position: relative;
+}
+
+.category-input {
+  width: 100%;
+}
+
 .add-btn {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 24px;
-  background: #667eea;
+  padding: 14px 28px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
   border: none;
-  border-radius: 6px;
+  border-radius: 12px;
   font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+  white-space: nowrap;
 }
 
 .add-btn:hover {
-  background: #5568d3;
+  transform: translateY(-2px) scale(1.05);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+}
+
+.add-btn:active {
+  transform: translateY(0) scale(1);
 }
 
 .controls-card {
@@ -683,38 +808,45 @@ onMounted(async () => {
 }
 
 .filter-btn {
-  padding: 8px 16px;
-  border: 1px solid #ddd;
+  padding: 10px 20px;
+  border: 2px solid #e0e0e0;
   background: white;
   color: #666;
-  border-radius: 6px;
+  border-radius: 20px;
   font-size: 0.9rem;
+  font-weight: 500;
   cursor: pointer;
+  transition: all 0.3s ease;
 }
 
 .filter-btn:hover {
   border-color: #667eea;
   color: #667eea;
+  transform: translateY(-2px);
 }
 
 .filter-btn.active {
-  background: #667eea;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
-  border-color: #667eea;
+  border-color: transparent;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
 }
 
 .sort-select {
   width: 100%;
-  padding: 8px 12px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
+  padding: 10px 16px;
+  border: 2px solid #e0e0e0;
+  border-radius: 12px;
   font-size: 0.9rem;
+  background: white;
   cursor: pointer;
+  transition: all 0.3s ease;
 }
 
 .sort-select:focus {
   outline: none;
   border-color: #667eea;
+  box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
 }
 
 .loading-card {
@@ -723,17 +855,20 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  background: white;
-  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(20px);
+  border-radius: 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
   gap: 20px;
   color: #666;
+  font-size: 1.1rem;
 }
 
 .spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid #f3f3f3;
-  border-top: 3px solid #667eea;
+  width: 50px;
+  height: 50px;
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #667eea;
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -765,13 +900,13 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 24px;
-  height: 24px;
-  padding: 0 8px;
-  background: #667eea;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 10px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
-  border-radius: 12px;
-  font-size: 0.8rem;
+  border-radius: 14px;
+  font-size: 0.85rem;
   font-weight: 600;
   margin-left: 8px;
 }
@@ -805,36 +940,107 @@ onMounted(async () => {
 .task-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
 }
 
 .task-card {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 16px;
+  gap: 16px;
+  padding: 20px;
   background: white;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-  border: 1px solid #e0e0e0;
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  border: 2px solid transparent;
+  transition: all 0.3s ease;
+  animation: slideInRight 0.5s ease-out backwards;
+  position: relative;
+  overflow: hidden;
+}
+
+.task-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  transform: scaleY(0);
+  transition: transform 0.3s ease;
 }
 
 .task-card:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  border-color: #667eea;
+}
+
+.task-card:hover::before {
+  transform: scaleY(1);
 }
 
 .task-card.completed {
-  opacity: 0.6;
+  opacity: 0.7;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(-30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .task-checkbox-wrapper {
+  position: relative;
   flex-shrink: 0;
 }
 
 .task-checkbox {
-  width: 20px;
-  height: 20px;
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.checkbox-label {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border: 2px solid #ddd;
+  border-radius: 6px;
   cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.checkbox-label::after {
+  content: '✓';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  color: white;
+  font-size: 16px;
+  font-weight: bold;
+  transition: transform 0.2s ease;
+}
+
+.task-checkbox:checked + .checkbox-label {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-color: transparent;
+}
+
+.task-checkbox:checked + .checkbox-label::after {
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.task-checkbox:focus + .checkbox-label {
+  box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.2);
 }
 
 .task-content {
@@ -877,14 +1083,16 @@ onMounted(async () => {
 .tag {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
-  border-radius: 6px;
+  padding: 6px 12px;
+  border-radius: 12px;
   font-size: 0.8rem;
+  font-weight: 500;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .category-tag {
-  background: #e8ecff;
+  background: rgba(102, 126, 234, 0.1);
   color: #667eea;
 }
 
@@ -893,80 +1101,104 @@ onMounted(async () => {
 }
 
 .date-tag {
-  background: #f0f0f0;
+  background: rgba(0, 0, 0, 0.05);
   color: #666;
 }
 
 .date-tag.overdue {
-  background: #ffe8e8;
+  background: rgba(255, 71, 87, 0.1);
   color: #ff4757;
   font-weight: 600;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
 .delete-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  background: #ffe8e8;
+  width: 36px;
+  height: 36px;
+  background: rgba(255, 71, 87, 0.1);
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
+  transition: all 0.3s ease;
   flex-shrink: 0;
+  opacity: 0.6;
 }
 
 .delete-btn:hover {
-  background: #ffd0d0;
+  background: rgba(255, 71, 87, 0.2);
+  opacity: 1;
+  transform: scale(1.1) rotate(90deg);
 }
 
 .delete-icon {
-  font-size: 1rem;
+  font-size: 1.2rem;
 }
 
 .empty-state {
   text-align: center;
-  padding: 60px 20px;
-  background: white;
-  border-radius: 12px;
+  padding: 80px 20px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(20px);
+  border-radius: 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  animation: fadeInUp 0.6s ease-out;
 }
 
 .empty-icon {
-  font-size: 3rem;
-  margin-bottom: 16px;
+  font-size: 4rem;
+  margin-bottom: 20px;
+  animation: bounce 2s infinite;
 }
 
 .empty-text {
-  font-size: 1.2rem;
+  font-size: 1.5rem;
   font-weight: 600;
   color: #333;
   margin-bottom: 8px;
 }
 
 .empty-subtext {
-  font-size: 0.9rem;
+  font-size: 1rem;
   color: #666;
 }
 
 .task-list-enter-active,
 .task-list-leave-active {
-  transition: opacity 0.3s ease;
+  transition: all 0.4s ease;
 }
 
-.task-list-enter-from,
+.task-list-enter-from {
+  opacity: 0;
+  transform: translateX(-30px) scale(0.9);
+}
+
 .task-list-leave-to {
   opacity: 0;
+  transform: translateX(30px) scale(0.9);
+}
+
+.task-list-move {
+  transition: transform 0.4s ease;
 }
 
 .slide-enter-active,
 .slide-leave-active {
-  transition: all 0.3s ease;
+  transition: all 0.4s ease;
 }
 
 .slide-enter-from,
 .slide-leave-to {
   opacity: 0;
   max-height: 0;
+  transform: translateY(-20px);
 }
 
 .load-more-trigger {
@@ -978,18 +1210,26 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 20px;
-  background: #667eea;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
   border: none;
-  border-radius: 6px;
+  border-radius: 12px;
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
 }
 
 .load-more-btn:hover {
-  background: #5568d3;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+}
+
+.load-icon {
+  font-size: 1rem;
+  animation: bounce 1s infinite;
 }
 
 /* 简单响应式 */
