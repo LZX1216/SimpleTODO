@@ -52,7 +52,7 @@ app.add_middleware(
 )
 
 # 注册路由
-app.include_router(tasks_router)
+app.include_router(tasks.router)
 
 @app.get("/")
 def read_root():
