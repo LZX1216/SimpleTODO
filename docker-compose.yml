@@ -7,6 +7,9 @@ services:
     container_name: todo_backend
     ports:
       - "8000:8000"
+    volumes:
+      # 挂载代码目录，实现热重载（代码更改自动生效）
+      - ./backend/app:/app/app
     depends_on:
       db:
         condition: service_healthy

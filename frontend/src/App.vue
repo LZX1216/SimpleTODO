@@ -8,6 +8,7 @@ const API_BASE_URL = 'http://localhost:8000';
 // --- 状态 ---
 const tasks = ref([]);
 const newTaskTitle = ref('');
+const newTaskDescription = ref('');
 const loading = ref(true);
 
 // --- 计算属性：分类显示任务 ---
@@ -37,13 +38,14 @@ const addTask = async () => {
 
   const taskData = {
     title: newTaskTitle.value.trim(),
-    description: "从前端添加的描述。",
+    description: newTaskDescription.value.trim() || null, // 描述可选
     category: "Life" // 默认分类
   };
 
   try {
     await axios.post(`${API_BASE_URL}/tasks/`, taskData);
     newTaskTitle.value = ''; // 清空输入
+    newTaskDescription.value = ''; // 清空描述
     await fetchTasks(); // 刷新列表
   } catch (error) {
     console.error("添加任务失败:", error);
@@ -89,13 +91,25 @@ onMounted(fetchTasks);
   <div class="container">
     <h1>📝 Todo List (Python Backend)</h1>
     
-    <div class="input-group">
-      <input 
-        v-model="newTaskTitle" 
-        @keyup.enter="addTask"
-        placeholder="输入新的待办事项标题..." 
-      />
-      <button @click="addTask">添加任务</button>
+    <div class="task-form">
+      <div class="input-group">
+        <input 
+          v-model="newTaskTitle" 
+          @keyup.enter="addTask"
+          placeholder="输入新的待办事项标题..." 
+          required
+        />
+        <button @click="addTask">添加任务</button>
+      </div>
+      <div class="input-group">
+        <textarea 
+          v-model="newTaskDescription" 
+          @keyup.ctrl.enter="addTask"
+          placeholder="描述（可选）..." 
+          rows="2"
+          class="description-input"
+        ></textarea>
+      </div>
     </div>
 
     <div v-if="loading" class="loading">加载中...</div>
@@ -109,8 +123,11 @@ onMounted(fetchTasks);
             :checked="task.is_completed" 
             @change="toggleCompletion(task)"
           />
-          <span class="task-title">{{ task.title }}</span>
-          <span class="category">[{{ task.category }}]</span>
+          <div class="task-content">
+            <span class="task-title">{{ task.title }}</span>
+            <span v-if="task.description" class="task-description">{{ task.description }}</span>
+            <span class="category">[{{ task.category }}]</span>
+          </div>
           <button class="delete-btn" @click="deleteTask(task.id)" title="删除任务">🗑️</button>
         </li>
       </ul>
@@ -125,8 +142,11 @@ onMounted(fetchTasks);
             :checked="task.is_completed" 
             @change="toggleCompletion(task)"
           />
-          <span class="task-title">{{ task.title }}</span>
-          <span class="category">[{{ task.category }}]</span>
+          <div class="task-content">
+            <span class="task-title">{{ task.title }}</span>
+            <span v-if="task.description" class="task-description">{{ task.description }}</span>
+            <span class="category">[{{ task.category }}]</span>
+          </div>
           <button class="delete-btn" @click="deleteTask(task.id)" title="删除任务">🗑️</button>
         </li>
       </ul>
@@ -162,16 +182,20 @@ h1, h2 {
   padding-bottom: 10px;
   margin-top: 20px;
 }
+.task-form {
+  margin-bottom: 20px;
+}
 .input-group {
   display: flex;
   gap: 10px;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
 }
 .input-group input {
   flex-grow: 1;
   padding: 10px;
   border: 1px solid #ccc;
   border-radius: 4px;
+  font-size: 14px;
 }
 .input-group button {
   padding: 10px 15px;
@@ -180,6 +204,21 @@ h1, h2 {
   border: none;
   border-radius: 4px;
   cursor: pointer;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.input-group button:hover {
+  background-color: #45a049;
+}
+.description-input {
+  flex-grow: 1;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: Arial, sans-serif;
+  resize: vertical;
+  min-height: 40px;
 }
 .task-list {
   list-style: none;
@@ -200,18 +239,36 @@ h1, h2 {
   cursor: pointer;
   flex-shrink: 0;
 }
-.task-title {
+.task-content {
   flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.task-title {
+  font-weight: 500;
+  word-break: break-word;
+}
+.task-description {
+  font-size: 0.85em;
+  color: #666;
+  font-style: italic;
   word-break: break-word;
 }
 .task-item.completed .task-title {
   text-decoration: line-through;
   color: #999;
 }
+.task-item.completed .task-description {
+  text-decoration: line-through;
+  color: #bbb;
+}
 .category {
   font-size: 0.8em;
   color: #1e88e5;
   flex-shrink: 0;
+  margin-top: 2px;
 }
 .delete-btn {
   background: none;
