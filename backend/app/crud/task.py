@@ -1,6 +1,6 @@
 # backend/app/crud/task.py
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, case
 from typing import List, Optional
 
 from ..models.task import Task
@@ -12,7 +12,9 @@ def create_task(db: Session, task: TaskCreate) -> Task:
     db_task = Task(
         title=task.title,
         description=task.description,
-        category=task.category or "Misc"
+        category=task.category or "Misc",
+        priority=task.priority or 2,
+        due_date=task.due_date
     )
     db.add(db_task)
     db.commit()
@@ -23,9 +25,10 @@ def create_task(db: Session, task: TaskCreate) -> Task:
 def get_tasks(
     db: Session, 
     is_completed: Optional[bool] = None,
-    category: Optional[str] = None
+    category: Optional[str] = None,
+    sort_by: Optional[str] = None
 ) -> List[Task]:
-    """获取任务列表，支持按完成状态和分类过滤"""
+    """获取任务列表，支持按完成状态和分类过滤，支持排序"""
     query = db.query(Task)
     
     if is_completed is not None:
@@ -34,8 +37,23 @@ def get_tasks(
     if category is not None:
         query = query.filter(Task.category == category)
     
-    # 按创建时间倒序排列（最新的在前）
-    return query.order_by(desc(Task.created_at)).all()
+    # 排序逻辑
+    if sort_by == "priority":
+        # 按优先级升序（1=高优先级在前），然后按创建时间倒序
+        query = query.order_by(Task.priority.asc(), desc(Task.created_at))
+    elif sort_by == "due_date":
+        # 按截止日期升序（即将到期的在前），无截止日期的在最后，然后按优先级
+        query = query.order_by(
+            case((Task.due_date.is_(None), 1), else_=0),
+            Task.due_date.asc(),
+            Task.priority.asc(),
+            desc(Task.created_at)
+        )
+    else:
+        # 默认按创建时间倒序排列（最新的在前）
+        query = query.order_by(desc(Task.created_at))
+    
+    return query.all()
 
 
 def get_task(db: Session, task_id: int) -> Optional[Task]:

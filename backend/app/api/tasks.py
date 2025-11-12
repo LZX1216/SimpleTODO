@@ -43,6 +43,7 @@ def create_task_endpoint(task: TaskCreate, db: Session = Depends(get_db)):
 def read_tasks_endpoint(
     is_completed: Optional[bool] = None, # 过滤条件：是否完成
     category: Optional[str] = None,      # 扩展过滤条件：分类
+    sort_by: Optional[str] = None,        # 排序方式：priority, due_date, 或 None（默认创建时间）
     db: Session = Depends(get_db)
 ):
     """
@@ -50,12 +51,13 @@ def read_tasks_endpoint(
     
     - 支持按完成状态 (`is_completed`) 过滤。
     - 支持按任务分类 (`category`) 过滤。
-    - 默认按创建时间倒序排列 (最新创建的在最前面)。
+    - 支持排序：`priority`（按优先级）、`due_date`（按截止日期）、默认按创建时间倒序。
     """
     tasks = crud.task.get_tasks(
         db=db, 
         is_completed=is_completed,
-        category=category
+        category=category,
+        sort_by=sort_by
     )
     return tasks
 
