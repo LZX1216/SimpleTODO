@@ -1,6 +1,26 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import axios from 'axios';
+import TaskCard from './components/TaskCard.vue';
+import { 
+  LAZY_LOAD_BATCH_SIZE, 
+  LAZY_LOAD_INITIAL_COUNT,
+  DATE_PICKER_DELAY,
+  LAZY_LOAD_DELAY,
+  LAZY_LOAD_RENDER_DELAY,
+  LAZY_LOAD_OBSERVER_DELAY,
+  SETUP_LAZY_LOAD_DELAY,
+  ON_MOUNT_LAZY_LOAD_DELAY,
+  TITLE_MAX_LENGTH,
+  DESCRIPTION_MAX_LENGTH,
+  CATEGORY_MAX_LENGTH,
+  DESCRIPTION_EXPAND_THRESHOLD,
+  TASK_ANIMATION_DELAY,
+  SCROLL_TO_TOP_THRESHOLD,
+  INTERSECTION_OBSERVER_ROOT_MARGIN
+} from './utils/constants.js';
+import { formatDate, isOverdue, getDaysDifference } from './utils/dateUtils.js';
+import { shouldShowExpandButton, validateTitle, validateDescription, validateCategory } from './utils/validation.js';
 
 // --- 配置 ---
 const API_BASE_URL = 'http://localhost:8000'; 
@@ -21,13 +41,16 @@ const showScrollToTop = ref(false); // 是否显示回到顶部按钮
 const loading = ref(true);
 const showCompleted = ref(false);
 const showActiveTasks = ref(true); // 待处理任务是否展开（默认展开）
-const visibleActiveCount = ref(10); // 懒加载：初始显示的待处理任务数量
-const visibleCompletedCount = ref(10); // 懒加载：初始显示的已完成任务数量
+const visibleActiveCount = ref(LAZY_LOAD_INITIAL_COUNT); // 懒加载：初始显示的待处理任务数量
+const visibleCompletedCount = ref(LAZY_LOAD_INITIAL_COUNT); // 懒加载：初始显示的已完成任务数量
 const editingTaskId = ref(null); // 正在编辑的任务ID
 let lazyLoadObserver = null; // 懒加载观察器引用
+const lazyLoadingActive = ref(false); // 待处理任务懒加载中
+const lazyLoadingCompleted = ref(false); // 已完成任务懒加载中
 const showAddTask = ref(false); // 窄屏幕下是否显示添加任务表单
 const showSearch = ref(false); // 窄屏幕下是否显示搜索和筛选
 const showStats = ref(false); // 窄屏幕下是否显示任务统计
+const titleInputError = ref(false); // 标题输入框错误状态
 const expandedDescriptions = ref(new Set()); // 展开描述的任务ID集合
 
 // 互斥切换函数
@@ -76,7 +99,7 @@ const openDatePicker = (type, taskId = null) => {
         input.focus();
         input.showPicker?.();
       }
-    }, 10);
+    }, DATE_PICKER_DELAY);
   } else if (type === 'edit') {
     setTimeout(() => {
       // 尝试两个可能的ID（待处理任务和已完成任务）
@@ -86,13 +109,13 @@ const openDatePicker = (type, taskId = null) => {
         input.focus();
         input.showPicker?.();
       }
-    }, 10);
+    }, DATE_PICKER_DELAY);
   }
 };
 
 // --- 分类选项 ---
-const defaultCategories = ['工作', '学习', '生活', '其他'];
-const defaultCategoriesWithoutOther = ['工作', '学习', '生活']; // 默认分类（不含"其他"）
+const defaultCategories = ['工作', '学习', '生活', '未分类'];
+const defaultCategoriesWithoutUncategorized = ['工作', '学习', '生活']; // 默认分类（不含"未分类"）
 
 // 从所有任务中提取所有分类，合并默认分类（不受筛选影响）
 const categories = computed(() => {
@@ -102,16 +125,16 @@ const categories = computed(() => {
   // 合并所有分类并去重
   const allCategories = [...new Set([...defaultCategories, ...taskCategories])];
   
-  // 分离默认分类（不含"其他"）、自定义分类和"其他"
+  // 分离默认分类（不含"未分类"）、自定义分类和"未分类"
   // 保持默认分类的指定顺序
-  const defaultCats = defaultCategoriesWithoutOther.filter(cat => allCategories.includes(cat));
+  const defaultCats = defaultCategoriesWithoutUncategorized.filter(cat => allCategories.includes(cat));
   const customCats = allCategories.filter(cat => 
     !defaultCategories.includes(cat)
   ).sort(); // 自定义分类按字母顺序排序
-  const otherCat = allCategories.filter(cat => cat === '其他');
+  const uncategorizedCat = allCategories.filter(cat => cat === '未分类');
   
-  // 组合：默认分类（不含"其他"） -> 自定义分类 -> "其他"
-  return [...defaultCats, ...customCats, ...otherCat];
+  // 组合：默认分类（不含"未分类"） -> 自定义分类 -> "未分类"
+  return [...defaultCats, ...customCats, ...uncategorizedCat];
 });
 const priorityOptions = [
   { value: 1, label: '高', icon: '🔥', color: '#ff4757' },
@@ -133,8 +156,8 @@ const filteredTasks = computed(() => {
 
 // 监听筛选变化，重置懒加载计数（不监听tasks，避免编辑后重置）
 watch([selectedCategory, selectedDateFilter, searchKeyword], () => {
-  visibleActiveCount.value = 10;
-  visibleCompletedCount.value = 10;
+  visibleActiveCount.value = LAZY_LOAD_INITIAL_COUNT;
+  visibleCompletedCount.value = LAZY_LOAD_INITIAL_COUNT;
 });
 
 // 用于显示的任务（筛选后）
@@ -162,27 +185,8 @@ const hasMoreCompletedTasks = computed(() => {
   return completedTasks.value.length > visibleCompletedCount.value;
 });
 
-// --- 工具函数（需要在统计计算之前定义）---
-const isOverdue = (dateString) => {
-  if (!dateString) return false;
-  const date = new Date(dateString);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  date.setHours(0, 0, 0, 0);
-  return date < today;
-};
-
-// 计算日期差（天数）
-const getDaysDifference = (dateString) => {
-  if (!dateString) return 0;
-  const date = new Date(dateString);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  date.setHours(0, 0, 0, 0);
-  const diffTime = date - today;
-  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-  return diffDays;
-};
+// --- 工具函数（从 utils 导入）---
+// isOverdue, getDaysDifference, formatDate 已从 utils/dateUtils.js 导入
 
 // --- 统计计算属性 ---
 // 完成率（基于所有任务）
@@ -196,7 +200,7 @@ const completionRate = computed(() => {
 const categoryStats = computed(() => {
   const stats = {};
   allTasks.value.forEach(task => {
-    const cat = task.category || '其他';
+    const cat = task.category || '未分类';
     if (!stats[cat]) {
       stats[cat] = { total: 0, completed: 0 };
     }
@@ -304,22 +308,36 @@ const clearSearch = () => {
 const addTask = async () => {
   // 字符长度限制和验证
   const title = newTaskTitle.value.trim();
-  if (!title) return;
+  if (!title) {
+    // 触发错误提示：红色边框和抖动动画
+    titleInputError.value = true;
+    // 500ms后自动清除错误状态（抖动动画结束后）
+    setTimeout(() => {
+      titleInputError.value = false;
+    }, 500);
+    return;
+  }
   
-  if (title.length > 255) {
-    alert('任务标题不能超过255个字符！');
+  // 清除错误状态
+  titleInputError.value = false;
+  
+  const titleValidation = validateTitle(title);
+  if (!titleValidation.valid) {
+    alert(titleValidation.error);
     return;
   }
   
   const description = newTaskDescription.value.trim() || null;
-  if (description && description.length > 1000) {
-    alert('任务描述不能超过1000个字符！');
+  const descriptionValidation = validateDescription(description);
+  if (!descriptionValidation.valid) {
+    alert(descriptionValidation.error);
     return;
   }
   
-  const category = newTaskCategory.value.trim() || '其他';
-  if (category.length > 50) {
-    alert('分类名称不能超过50个字符！');
+  const category = newTaskCategory.value.trim() || '未分类';
+  const categoryValidation = validateCategory(category);
+  if (!categoryValidation.valid) {
+    alert(categoryValidation.error);
     return;
   }
 
@@ -379,7 +397,7 @@ const startEdit = (task) => {
   editForm.value = {
     title: task.title,
     description: task.description || '',
-    category: task.category || '其他',
+    category: task.category || '未分类',
     priority: task.priority || 2,
     due_date: task.due_date || ''
   };
@@ -396,28 +414,34 @@ const cancelEdit = () => {
   };
 };
 
-const saveEdit = async (taskId) => {
+const saveEdit = async (taskId, formData = null) => {
+  // 使用传入的表单数据，如果没有则使用 editForm
+  const form = formData || editForm.value;
+  
   // 字符长度限制和验证
-  const title = editForm.value.title.trim();
+  const title = form.title.trim();
   if (!title) {
     alert('任务标题不能为空！');
     return;
   }
   
-  if (title.length > 255) {
-    alert('任务标题不能超过255个字符！');
+  const titleValidation = validateTitle(title);
+  if (!titleValidation.valid) {
+    alert(titleValidation.error);
     return;
   }
   
-  const description = editForm.value.description.trim() || null;
-  if (description && description.length > 1000) {
-    alert('任务描述不能超过1000个字符！');
+  const description = form.description.trim() || null;
+  const descriptionValidation = validateDescription(description);
+  if (!descriptionValidation.valid) {
+    alert(descriptionValidation.error);
     return;
   }
   
-  const category = editForm.value.category.trim() || '其他';
-  if (category.length > 50) {
-    alert('分类名称不能超过50个字符！');
+  const category = form.category.trim() || '未分类';
+  const categoryValidation = validateCategory(category);
+  if (!categoryValidation.valid) {
+    alert(categoryValidation.error);
     return;
   }
 
@@ -425,8 +449,8 @@ const saveEdit = async (taskId) => {
     title: title,
     description: description,
     category: category,
-    priority: editForm.value.priority,
-    due_date: editForm.value.due_date || null
+    priority: form.priority,
+    due_date: form.due_date || null
   };
 
   try {
@@ -539,76 +563,9 @@ const triggerImport = () => {
 };
 
 // --- 工具函数 ---
-const formatDate = (dateString) => {
-  if (!dateString) return '';
-  
-  // 处理日期字符串，支持多种格式
-  let date;
-  if (typeof dateString === 'string') {
-    // 处理可能的日期格式：YYYY-MM-DD, YYYY/MM/DD, YYYY-MM-DDTHH:mm:ss 等
-    let datePart = dateString.split('T')[0]; // 处理可能包含时间的字符串
-    datePart = datePart.split(' ')[0]; // 处理可能包含空格的情况
-    
-    // 如果包含斜杠，转换为短横线
-    if (datePart.includes('/')) {
-      datePart = datePart.replace(/\//g, '-');
-    }
-    
-    // 尝试解析日期
-    date = new Date(datePart + 'T00:00:00');
-    
-    // 如果解析失败，尝试其他方式
-    if (isNaN(date.getTime())) {
-      date = new Date(datePart);
-    }
-  } else {
-    date = new Date(dateString);
-  }
-  
-  // 检查日期是否有效
-  if (isNaN(date.getTime())) {
-    console.warn('无法解析日期:', dateString);
-    return dateString; // 如果日期无效，返回原始字符串
-  }
-  
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  
-  // 使用本地日期进行比较，避免时区问题
-  const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const tomorrowOnly = new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate());
-  
-  // 计算日期差
-  const daysDiff = getDaysDifference(dateString);
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  const year = date.getFullYear();
-  const currentYear = new Date().getFullYear();
-  
-  // 如果日期不在今年，则加上年份
-  let formattedDate;
-  if (year !== currentYear) {
-    formattedDate = `${year}年${month}月${day}日`;
-  } else {
-    formattedDate = `${month}月${day}日`;
-  }
-  
-  if (dateOnly.getTime() === todayOnly.getTime()) {
-    return `今天（${formattedDate}）`;
-  } else if (dateOnly.getTime() === tomorrowOnly.getTime()) {
-    return `明天（${formattedDate}）`;
-  } else if (daysDiff < 0) {
-    // 已过期
-    const daysOverdue = Math.abs(daysDiff);
-    return `已过期${daysOverdue}天（${formattedDate}）`;
-  } else {
-    // 未来日期
-    return `${daysDiff}天后（${formattedDate}）`;
-  }
-};
+// --- 工具函数（从 utils 导入）---
+// isOverdue, getDaysDifference, formatDate 已从 utils/dateUtils.js 导入
+// shouldShowExpandButton 已从 utils/validation.js 导入
 
 const getPriorityInfo = (priority) => {
   return priorityOptions.find(opt => opt.value === (priority || 2)) || priorityOptions[1];
@@ -623,23 +580,36 @@ const toggleDescription = (taskId) => {
   }
 };
 
-// 检查描述是否需要展开/收起按钮（超过一定长度）
-const shouldShowExpandButton = (description) => {
-  if (!description) return false;
-  // 如果描述超过100个字符或者包含换行符，显示展开/收起按钮
-  return description.length > 100 || description.includes('\n');
-};
-
 // --- 懒加载功能 ---
-const loadMoreActiveTasks = () => {
-  if (visibleActiveCount.value < activeTasks.value.length) {
-    visibleActiveCount.value += 10;
+const loadMoreActiveTasks = async () => {
+  if (visibleActiveCount.value < activeTasks.value.length && !lazyLoadingActive.value) {
+    lazyLoadingActive.value = true;
+    // 立即显示加载状态，然后加载内容
+    await new Promise(resolve => setTimeout(resolve, LAZY_LOAD_DELAY));
+    visibleActiveCount.value += LAZY_LOAD_BATCH_SIZE;
+    // 等待DOM渲染完成，但时间不要太长
+    await new Promise(resolve => setTimeout(resolve, LAZY_LOAD_RENDER_DELAY));
+    lazyLoadingActive.value = false;
+    // 重新设置观察器，因为DOM已更新
+    setTimeout(() => {
+      setupLazyLoad();
+    }, LAZY_LOAD_OBSERVER_DELAY);
   }
 };
 
-const loadMoreCompletedTasks = () => {
-  if (visibleCompletedCount.value < completedTasks.value.length) {
-    visibleCompletedCount.value += 10;
+const loadMoreCompletedTasks = async () => {
+  if (visibleCompletedCount.value < completedTasks.value.length && !lazyLoadingCompleted.value) {
+    lazyLoadingCompleted.value = true;
+    // 立即显示加载状态，然后加载内容
+    await new Promise(resolve => setTimeout(resolve, LAZY_LOAD_DELAY));
+    visibleCompletedCount.value += LAZY_LOAD_BATCH_SIZE;
+    // 等待DOM渲染完成，但时间不要太长
+    await new Promise(resolve => setTimeout(resolve, LAZY_LOAD_RENDER_DELAY));
+    lazyLoadingCompleted.value = false;
+    // 重新设置观察器，因为DOM已更新
+    setTimeout(() => {
+      setupLazyLoad();
+    }, LAZY_LOAD_OBSERVER_DELAY);
   }
 };
 
@@ -662,7 +632,7 @@ const setupLazyLoad = () => {
       }
     });
   }, {
-    rootMargin: '100px' // 提前100px开始加载
+    rootMargin: INTERSECTION_OBSERVER_ROOT_MARGIN // 提前开始加载
   });
 
   // 观察所有加载更多触发器
@@ -671,7 +641,7 @@ const setupLazyLoad = () => {
     triggers.forEach(trigger => {
       lazyLoadObserver.observe(trigger);
     });
-  }, 200);
+  }, SETUP_LAZY_LOAD_DELAY);
 };
 
 // 滚动到顶部
@@ -684,7 +654,7 @@ const scrollToTop = () => {
 
 // 监听滚动，显示/隐藏回到顶部按钮
 const handleScroll = () => {
-  showScrollToTop.value = window.scrollY > 300;
+  showScrollToTop.value = window.scrollY > SCROLL_TO_TOP_THRESHOLD;
 };
 
 // --- 生命周期 ---
@@ -693,7 +663,7 @@ onMounted(async () => {
   // 延迟设置懒加载，确保DOM已渲染
   setTimeout(() => {
     setupLazyLoad();
-  }, 100);
+  }, ON_MOUNT_LAZY_LOAD_DELAY);
   // 监听滚动事件
   window.addEventListener('scroll', handleScroll);
 });
@@ -795,9 +765,10 @@ onUnmounted(() => {
             <input 
               v-model="newTaskTitle" 
               @keyup.enter="addTask"
+              @input="titleInputError = false"
               placeholder="输入任务标题..." 
-              class="task-input"
-              maxlength="255"
+              :class="['task-input', { 'error': titleInputError }]"
+              :maxlength="TITLE_MAX_LENGTH"
             />
           </div>
           
@@ -808,7 +779,7 @@ onUnmounted(() => {
               placeholder="描述（可选）..." 
               class="task-textarea"
               rows="2"
-              maxlength="1000"
+              :maxlength="DESCRIPTION_MAX_LENGTH"
             ></textarea>
           </div>
           
@@ -819,7 +790,7 @@ onUnmounted(() => {
                 list="category-list"
                 placeholder="选择或输入分类..." 
                 class="form-select category-input"
-                maxlength="50"
+                :maxlength="CATEGORY_MAX_LENGTH"
               />
               <datalist id="category-list">
                 <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
@@ -1087,149 +1058,34 @@ onUnmounted(() => {
             <transition name="slide">
               <div v-if="showActiveTasks">
                 <transition-group name="task-list" tag="div" class="task-list">
-                <div 
-                  v-for="(task, index) in visibleActiveTasks" 
-                  :key="task.id" 
-                  class="task-card"
-                  :style="{ animationDelay: `${index * 0.05}s` }"
-                >
-                <div class="task-checkbox-wrapper">
-                  <input 
-                    type="checkbox" 
-                    :checked="task.is_completed" 
-                    @change="toggleCompletion(task)"
-                    class="task-checkbox"
-                    :id="`task-${task.id}`"
+                  <TaskCard
+                    v-for="(task, index) in visibleActiveTasks"
+                    :key="task.id"
+                    :task="task"
+                    :index="index"
+                    :is-completed="false"
+                    :is-editing="editingTaskId === task.id"
+                    :edit-form="editForm"
+                    :is-description-expanded="expandedDescriptions.has(task.id)"
+                    :categories="categories"
+                    :priority-options="priorityOptions"
+                    @toggle-completion="toggleCompletion"
+                    @start-edit="startEdit"
+                    @save-edit="saveEdit"
+                    @cancel-edit="cancelEdit"
+                    @delete-task="deleteTask"
+                    @toggle-description="toggleDescription"
+                    @open-date-picker="(taskId) => openDatePicker('edit', taskId)"
                   />
-                  <label :for="`task-${task.id}`" class="checkbox-label"></label>
-                </div>
-                
-                                <div v-if="editingTaskId === task.id" class="task-content edit-mode">
-                  <div class="edit-form">
-                    <input 
-                      v-model="editForm.title" 
-                      class="edit-input"
-                      placeholder="任务标题..."
-                      maxlength="255"
-                    />
-                    <textarea 
-                      v-model="editForm.description" 
-                      class="edit-textarea"
-                      placeholder="描述（可选）..."
-                      rows="2"
-                      maxlength="1000"
-                    ></textarea>
-                    <div class="edit-options">
-                      <div class="category-input-wrapper">
-                        <input 
-                          v-model="editForm.category" 
-                          list="edit-category-list"
-                          placeholder="选择或输入分类..." 
-                          class="edit-select category-input"
-                          maxlength="50"
-                        />
-                        <datalist id="edit-category-list">
-                          <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
-                        </datalist>
-                      </div>
-                      <select v-model="editForm.priority" class="edit-select">
-                        <option v-for="opt in priorityOptions" :key="opt.value" :value="opt.value">
-                          {{ opt.icon }} {{ opt.label }}
-                        </option>
-                      </select>
-                      <div class="date-input-wrapper">
-                        <input 
-                          type="date" 
-                          v-model="editForm.due_date" 
-                          class="edit-select date-input"
-                          :id="`edit-task-date-input-${task.id}`"
-                        />
-                        <label 
-                          v-if="!editForm.due_date" 
-                          class="date-placeholder"
-                          @click="openDatePicker('edit', task.id)"
-                        >
-                          截止日期
-                        </label>
-                        <span 
-                          v-if="editForm.due_date" 
-                          class="date-display"
-                          @click="openDatePicker('edit', task.id)"
-                        >
-                          {{ formatDate(editForm.due_date) }}
-                        </span>
-                      </div>
-                    </div>
-                    <div class="edit-actions">
-                      <button @click="saveEdit(task.id)" class="save-btn">保存</button>
-                      <button @click="cancelEdit" class="cancel-btn">取消</button>
-                    </div>
-                  </div>
-                </div>
-                
-                                <div v-else class="task-content">
-                  <div class="task-title">{{ task.title }}</div>
-                  <div v-if="task.description" class="task-description-wrapper">
-                    <div 
-                      class="task-description" 
-                      :class="{ 'expanded': expandedDescriptions.has(task.id) }"
-                    >
-                      {{ task.description }}
-                    </div>
-                    <button 
-                      v-if="shouldShowExpandButton(task.description)"
-                      @click="toggleDescription(task.id)"
-                      class="expand-description-btn"
-                      :title="expandedDescriptions.has(task.id) ? '收起' : '展开'"
-                    >
-                      <span v-if="expandedDescriptions.has(task.id)">收起</span>
-                      <span v-else>展开</span>
-                      <span class="expand-icon" :class="{ 'expanded': expandedDescriptions.has(task.id) }">▼</span>
-                    </button>
-                  </div>
-                  
-                  <div class="task-tags">
-                    <span class="tag category-tag">{{ task.category }}</span>
-                    <span 
-                      class="tag priority-tag" 
-                      :style="{ backgroundColor: getPriorityInfo(task.priority || 2).color + '20', color: getPriorityInfo(task.priority || 2).color }"
-                    >
-                      {{ getPriorityInfo(task.priority || 2).icon }} {{ getPriorityInfo(task.priority || 2).label }}
-                    </span>
-                    <span 
-                      v-if="task.due_date" 
-                      class="tag date-tag"
-                      :class="{ 
-                        'overdue': isOverdue(task.due_date),
-                        'today': getDaysDifference(task.due_date) === 0
-                      }"
-                    >
-                      📅 {{ formatDate(task.due_date) }}
-                    </span>
-                  </div>
-                </div>
-                
-                <div v-if="editingTaskId !== task.id" class="task-actions">
-                  <button 
-                    class="edit-btn" 
-                    @click="startEdit(task)" 
-                    title="编辑任务"
-                  >
-                    <span class="edit-icon">✏️</span>
-                  </button>
-                  <button 
-                    class="delete-btn" 
-                    @click="deleteTask(task.id)" 
-                    title="删除任务"
-                  >
-                    <span class="delete-icon">🗑️</span>
-                  </button>
-                </div>
-              </div>
                 </transition-group>
                 
                 <!-- 懒加载触发器（不可见，用于Intersection Observer） -->
                 <div v-if="hasMoreActiveTasks" class="load-more-trigger load-more-active"></div>
+                <!-- 懒加载加载提示 -->
+                <div v-if="lazyLoadingActive" class="lazy-loading-indicator">
+                  <div class="lazy-spinner"></div>
+                  <span>加载更多任务...</span>
+                </div>
               </div>
             </transition>
           </section>
@@ -1246,138 +1102,33 @@ onUnmounted(() => {
             
             <transition name="slide">
               <div v-if="showCompleted" class="task-list">
-                <div 
-                  v-for="(task, index) in visibleCompletedTasks" 
-                  :key="task.id" 
-                  class="task-card completed"
-                  :style="{ animationDelay: `${index * 0.05}s` }"
-                >
-                  <div class="task-checkbox-wrapper">
-                    <input 
-                      type="checkbox" 
-                      :checked="task.is_completed" 
-                      @change="toggleCompletion(task)"
-                      class="task-checkbox"
-                      :id="`completed-${task.id}`"
-                    />
-                    <label :for="`completed-${task.id}`" class="checkbox-label"></label>
-                  </div>
-                  
-                                    <div v-if="editingTaskId === task.id" class="task-content edit-mode">
-                    <div class="edit-form">
-                      <input 
-                        v-model="editForm.title" 
-                        class="edit-input"
-                        placeholder="任务标题..."
-                        maxlength="255"
-                      />
-                      <textarea 
-                        v-model="editForm.description" 
-                        class="edit-textarea"
-                        placeholder="描述（可选）..."
-                        rows="2"
-                        maxlength="1000"
-                      ></textarea>
-                      <div class="edit-options">
-                        <div class="category-input-wrapper">
-                          <input 
-                            v-model="editForm.category" 
-                            list="edit-completed-category-list"
-                            placeholder="选择或输入分类..." 
-                            class="edit-select category-input"
-                            maxlength="50"
-                          />
-                          <datalist id="edit-completed-category-list">
-                            <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
-                          </datalist>
-                        </div>
-                        <select v-model="editForm.priority" class="edit-select">
-                          <option v-for="opt in priorityOptions" :key="opt.value" :value="opt.value">
-                            {{ opt.icon }} {{ opt.label }}
-                          </option>
-                        </select>
-                        <div class="date-input-wrapper">
-                          <input 
-                            type="date" 
-                            v-model="editForm.due_date" 
-                            class="edit-select date-input"
-                            :id="`edit-completed-task-date-input-${task.id}`"
-                          />
-                          <label 
-                            v-if="!editForm.due_date" 
-                            class="date-placeholder"
-                            @click="openDatePicker('edit', task.id)"
-                          >
-                            截止日期
-                          </label>
-                          <span 
-                            v-if="editForm.due_date" 
-                            class="date-display"
-                            @click="openDatePicker('edit', task.id)"
-                          >
-                            {{ formatDate(editForm.due_date) }}
-                          </span>
-                        </div>
-                      </div>
-                      <div class="edit-actions">
-                        <button @click="saveEdit(task.id)" class="save-btn">保存</button>
-                        <button @click="cancelEdit" class="cancel-btn">取消</button>
-                      </div>
-                    </div>
-                  </div>
-                  
-                                    <div v-else class="task-content">
-                    <div class="task-title">{{ task.title }}</div>
-                    <div v-if="task.description" class="task-description-wrapper">
-                      <div 
-                        class="task-description" 
-                        :class="{ 'expanded': expandedDescriptions.has(task.id) }"
-                      >
-                        {{ task.description }}
-                      </div>
-                      <button 
-                        v-if="shouldShowExpandButton(task.description)"
-                        @click="toggleDescription(task.id)"
-                        class="expand-description-btn"
-                        :title="expandedDescriptions.has(task.id) ? '收起' : '展开'"
-                      >
-                        <span v-if="expandedDescriptions.has(task.id)">收起</span>
-                        <span v-else>展开</span>
-                        <span class="expand-icon" :class="{ 'expanded': expandedDescriptions.has(task.id) }">▼</span>
-                      </button>
-                    </div>
-                    
-                    <div class="task-tags">
-                      <span class="tag category-tag">{{ task.category }}</span>
-                      <span 
-                        class="tag priority-tag" 
-                        :style="{ backgroundColor: getPriorityInfo(task.priority || 2).color + '20', color: getPriorityInfo(task.priority || 2).color }"
-                      >
-                        {{ getPriorityInfo(task.priority || 2).icon }} {{ getPriorityInfo(task.priority || 2).label }}
-                      </span>
-                    </div>
-                  </div>
-                  
-                  <div v-if="editingTaskId !== task.id" class="task-actions">
-                    <button 
-                      class="edit-btn" 
-                      @click="startEdit(task)" 
-                      title="编辑任务"
-                    >
-                      <span class="edit-icon">✏️</span>
-                    </button>
-                    <button 
-                      class="delete-btn" 
-                      @click="deleteTask(task.id)" 
-                      title="删除任务"
-                    >
-                      <span class="delete-icon">🗑️</span>
-                    </button>
-                  </div>
-                </div>
+                <TaskCard
+                  v-for="(task, index) in visibleCompletedTasks"
+                  :key="task.id"
+                  :task="task"
+                  :index="index"
+                  :is-completed="true"
+                  :is-editing="editingTaskId === task.id"
+                  :edit-form="editForm"
+                  :is-description-expanded="expandedDescriptions.has(task.id)"
+                  :categories="categories"
+                  :priority-options="priorityOptions"
+                  @toggle-completion="toggleCompletion"
+                  @start-edit="startEdit"
+                  @save-edit="saveEdit"
+                  @cancel-edit="cancelEdit"
+                  @delete-task="deleteTask"
+                  @toggle-description="toggleDescription"
+                  @open-date-picker="(taskId) => openDatePicker('edit', taskId)"
+                />
                 
                 <!-- 懒加载触发器（不可见，用于Intersection Observer） -->
                 <div v-if="hasMoreCompletedTasks" class="load-more-trigger load-more-completed"></div>
+                <!-- 懒加载加载提示 -->
+                <div v-if="lazyLoadingCompleted" class="lazy-loading-indicator">
+                  <div class="lazy-spinner"></div>
+                  <span>加载更多任务...</span>
+                </div>
               </div>
             </transition>
           </section>
@@ -1490,6 +1241,8 @@ onUnmounted(() => {
   margin: 0;
   font-size: 2.5rem;
   font-weight: 800;
+  line-height: 1;
+  /* 确保标题作为一个整体与右侧内容垂直居中对齐 */
 }
 
 .title-icon {
@@ -1852,13 +1605,73 @@ onUnmounted(() => {
   background: white;
 }
 
+/* 统一所有下拉框的箭头样式 */
+select.form-select,
+.form-select.category-input:not(.date-input),
+input[list].form-select:not(.date-input),
+input[list].category-input:not(.date-input) {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath fill='%23666' d='M7 10L2 5h10z'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 16px center !important;
+  background-size: 14px !important;
+  padding-right: 42px !important;
+  cursor: pointer;
+}
+
+/* 强制隐藏datalist的原生下拉指示器（针对不同浏览器） */
+input[list].form-select::-webkit-calendar-picker-indicator,
+input[list].category-input::-webkit-calendar-picker-indicator,
+input[list].form-select::-ms-clear,
+input[list].category-input::-ms-clear {
+  display: none !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  pointer-events: none !important;
+}
+
+
+select.form-select:hover,
+.form-select.category-input:not(.date-input):hover,
+input[list].form-select:not(.date-input):hover,
+input[list].category-input:not(.date-input):hover {
+  border-color: #3282b8;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath fill='%233282b8' d='M7 10L2 5h10z'/%3E%3C/svg%3E");
+}
+
 .task-input:focus,
 .task-textarea:focus,
-.form-select:focus {
+select.form-select:focus,
+.form-select.category-input:not(.date-input):focus,
+input[list].form-select:not(.date-input):focus,
+input[list].category-input:not(.date-input):focus {
   outline: none;
   border-color: #3282b8;
   box-shadow: 0 0 0 4px rgba(50, 130, 184, 0.1);
   transform: translateY(-2px);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath fill='%233282b8' d='M7 10L2 5h10z'/%3E%3C/svg%3E");
+}
+
+/* 标题输入框错误状态：红色边框和抖动动画 */
+.task-input.error {
+  border-color: #e74c3c;
+  box-shadow: 0 0 0 4px rgba(231, 76, 60, 0.1);
+  animation: shake 0.5s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  10%, 30%, 50%, 70%, 90% {
+    transform: translateX(-8px);
+  }
+  20%, 40%, 60%, 80% {
+    transform: translateX(8px);
+  }
 }
 
 .task-textarea {
@@ -1874,6 +1687,34 @@ onUnmounted(() => {
 
 .category-input {
   width: 100%;
+}
+
+/* 对于datalist的input，移除背景箭头，使用包装器的伪元素 */
+.category-input-wrapper input[list].category-input {
+  background-image: none !important;
+  padding-right: 42px;
+}
+
+/* 使用包装器的伪元素显示箭头（覆盖原生箭头，仅当有datalist的input时） */
+.category-input-wrapper:has(input[list])::after {
+  content: '';
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath fill='%23666' d='M7 10L2 5h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-size: contain;
+  pointer-events: none;
+  z-index: 10;
+  opacity: 1;
+}
+
+.category-input-wrapper:has(input[list]):hover::after,
+.category-input-wrapper:has(input[list].category-input:focus)::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath fill='%233282b8' d='M7 10L2 5h10z'/%3E%3C/svg%3E");
 }
 
 /* 编辑模式下优先级选择器使用固定宽度，为日期输入框留出更多空间 */
@@ -2188,12 +2029,72 @@ onUnmounted(() => {
   background: white;
   cursor: pointer;
   transition: all 0.3s ease;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px;
+  padding-right: 36px;
+}
+
+.sort-select:hover {
+  border-color: #3282b8;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%233282b8' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
 }
 
 .sort-select:focus {
   outline: none;
   border-color: #3282b8;
   box-shadow: 0 0 0 4px rgba(50, 130, 184, 0.1);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%233282b8' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+}
+
+/* 美化下拉选项框 */
+select option,
+datalist option {
+  padding: 10px 16px;
+  background: white;
+  color: #333;
+  font-size: 0.95rem;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+/* 选项悬停效果（部分浏览器支持） */
+select option:hover,
+select option:checked,
+select option:focus {
+  background: linear-gradient(135deg, #0f4c75 0%, #3282b8 100%);
+  color: white;
+}
+
+/* 美化datalist下拉选项（通过CSS变量，部分浏览器支持） */
+datalist {
+  position: absolute;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 1000;
+}
+
+/* 为下拉框添加更好的视觉效果 */
+.form-select,
+.edit-select,
+.sort-select {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.form-select:hover,
+.edit-select:hover,
+.sort-select:hover {
+  box-shadow: 0 4px 12px rgba(50, 130, 184, 0.15);
+  transform: translateY(-1px);
 }
 
 .loading-card {
@@ -2351,7 +2252,7 @@ onUnmounted(() => {
 }
 
 /* 宽屏幕下隐藏折叠按钮 */
-@media (min-width: 992px) {
+@media (min-width: 1024px) {
   .mobile-only {
     display: none !important;
   }
@@ -2686,12 +2587,52 @@ onUnmounted(() => {
   font-family: inherit;
 }
 
+/* 统一编辑模式下的下拉框箭头样式（排除日期输入框） */
+select.edit-select,
+.edit-select.category-input:not(.date-input),
+input[list].edit-select:not(.date-input),
+input[list].category-input.edit-select:not(.date-input) {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 9L1 4h10z'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 12px center !important;
+  background-size: 12px !important;
+  padding-right: 32px !important;
+  cursor: pointer;
+}
+
+/* 强制隐藏编辑模式下datalist的原生下拉指示器 */
+input[list].edit-select::-webkit-calendar-picker-indicator,
+input[list].category-input.edit-select::-webkit-calendar-picker-indicator,
+input[list].edit-select::-ms-clear,
+input[list].category-input.edit-select::-ms-clear {
+  display: none !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  pointer-events: none !important;
+}
+
+select.edit-select:hover,
+.edit-select.category-input:not(.date-input):hover,
+input[list].edit-select:not(.date-input):hover,
+input[list].category-input.edit-select:not(.date-input):hover {
+  border-color: #3282b8;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%233282b8' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+}
+
 .edit-input:focus,
 .edit-textarea:focus,
-.edit-select:focus {
+select.edit-select:focus,
+.edit-select.category-input:not(.date-input):focus,
+input[list].edit-select:not(.date-input):focus,
+input[list].category-input.edit-select:not(.date-input):focus {
   outline: none;
   border-color: #3282b8;
   box-shadow: 0 0 0 3px rgba(50, 130, 184, 0.1);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%233282b8' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
 }
 
 .edit-textarea {
@@ -2821,6 +2762,44 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+/* 懒加载指示器 */
+.lazy-loading-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 30px 20px;
+  gap: 12px;
+  color: #666;
+  font-size: 0.95rem;
+  animation: fadeIn 0.3s ease;
+}
+
+.lazy-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(50, 130, 184, 0.1);
+  border-top: 3px solid #3282b8;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* 快速回到顶部按钮 */
 .scroll-to-top-btn {
   position: fixed;
@@ -2871,8 +2850,8 @@ onUnmounted(() => {
 /* 3. 响应式布局 (Media Queries) */
 /* -------------------------------------------------- */
 
-/* 针对大屏幕 (>= 992px) 的双栏布局 */
-@media (min-width: 992px) {
+/* 针对大屏幕 (>= 1024px) 的双栏布局 */
+@media (min-width: 1024px) {
     .main-content {
         /* 在大屏幕上启用两栏网格布局 */
         display: grid;
@@ -2894,7 +2873,7 @@ onUnmounted(() => {
 
     /* 优化头部统计在宽屏的布局 */
     .header-content {
-        align-items: flex-end; /* 让统计信息对齐底部 */
+        align-items: center; /* 标题和右侧内容垂直居中对齐 */
         flex-wrap: nowrap; /* 避免在宽屏上统计信息换行 */
     }
 
@@ -2926,8 +2905,8 @@ onUnmounted(() => {
     }
 }
 
-/* 针对小屏幕 (<= 991px) 的优化 */
-@media (max-width: 991px) {
+/* 针对小屏幕 (< 1024px) 的优化 */
+@media (max-width: 1023px) {
     /* 显示折叠按钮组 */
     .toggle-buttons-group.mobile-only {
         display: flex !important;
@@ -3062,8 +3041,8 @@ onUnmounted(() => {
 }
 
 
-/* 针对超小屏幕 (<= 480px) 的进一步优化 */
-@media (max-width: 480px) {
+/* 针对超小屏幕 (<= 640px) 的进一步优化 */
+@media (max-width: 640px) {
     .title {
         font-size: 2rem;
     }
